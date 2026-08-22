@@ -1,0 +1,83 @@
+# Raw, processed, downloaded, and live-refresh data
+data/raw/
+data/processed/
+data/live/
+data/cache/
+
+# Generated analyses, predictions, ledgers, logs, and figures
+results/
+
+# Reproducible model/binary caches. Keep small JSON metadata only.
+artifacts/*.joblib
+artifacts/*.pkl
+artifacts/*.pickle
+artifacts/*.onnx
+*.joblib
+*.pkl
+*.pickle
+
+# Python caches, test output, and coverage
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Virtual environments and local package state
+.venv/
+.venv-*/
+venv/
+env/
+ENV/
+.conda/
+pip-wheel-metadata/
+*.egg-info/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+credentials*.json
+secrets.json
+secrets*.json
+service-account*.json
+
+# Runtime state and local databases
+instance/
+flask_session/
+*.sqlite
+*.sqlite3
+*.db
+
+# Temporary files and logs
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# IDE and OS metadata
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Empty legacy README superseded by README.md
+README.md.txt
