@@ -1,0 +1,53 @@
+services:
+  - type: web
+    name: mlb-v11-2-web
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120 app:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mlb-v11-2-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: OWNER_USERNAME
+        sync: false
+      - key: OWNER_PASSWORD_HASH
+        sync: false
+      - key: OWNER_SESSION_MINUTES
+        value: 30
+
+  - type: worker
+    name: mlb-v11-2-refresh
+    runtime: python
+    plan: standard
+    buildCommand: pip install -r requirements.txt
+    startCommand: python deployment_worker.py
+    disk:
+      name: mlb-live-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 10
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: REFRESH_INTERVAL_SECONDS
+        value: 60
+      - key: MLB_STATE_DIR
+        value: /opt/render/project/src/data/live
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mlb-v11-2-db
+          property: connectionString
+      - key: ROTOWIRE_API_KEY
+        sync: false
+
+databases:
+  - name: mlb-v11-2-db
+    plan: basic-256mb
+    databaseName: mlb_forecasts
+    user: mlb_forecasts

@@ -5,7 +5,27 @@ data/live/
 data/cache/
 
 # Generated analyses, predictions, ledgers, logs, and figures
-results/
+results/*
+# Small, read-only evidence required by the public website.
+!results/v11_2_cv_metrics.json
+!results/v11_2_untouched_2025_comparison.csv
+!results/live_tracking/
+results/live_tracking/*
+!results/live_tracking/*.csv
+!results/live_tracking/*.json
+!results/v11_2_computational_efficiency.csv
+!results/v11_2_confidence_overall_diagnostics.csv
+!results/v11_2_confidence_cumulative_levels.csv
+!results/v11_2_confidence_oos_game_predictions_2022_2025.csv
+!results/v11_2_live_feature_provenance.json
+!results/v11_2_compact_frozen_specification.json
+!results/figures/
+results/figures/*
+!results/figures/v11_2_feature_count_vs_rmse.png
+!results/figures/site_winner_accuracy_by_confidence.png
+!results/figures/site_high_confidence_accuracy_by_season.png
+!results/figures/v11_2_predicted_actual_calibration.png
+!results/figures/v11_2_family_ablation.png
 
 # Reproducible model/binary caches. Keep small JSON metadata only.
 artifacts/*.joblib
@@ -15,6 +35,8 @@ artifacts/*.onnx
 *.joblib
 *.pkl
 *.pickle
+# Exact, small, hash-verified frozen production model.
+!artifacts/v11_2_compact_pipeline.joblib
 
 # Python caches, test output, and coverage
 __pycache__/
@@ -66,6 +88,7 @@ flask_session/
 *.log
 *.tmp
 *.temp
+.deployment-smoke/
 *.bak
 *.swp
 *.swo

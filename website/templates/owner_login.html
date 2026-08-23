@@ -1,0 +1,4 @@
+{% extends 'base.html' %}{% block title %}Owner login · DiamondForecast{% endblock %}{% block content %}<link rel="stylesheet" href="{{ url_for('static',filename='css/owner.css') }}">
+<section class="page-intro"><p class="eyebrow">PRIVATE CONTROL PANEL</p><h1>Owner login</h1><p>Manage provisional batting orders without changing the frozen V11.2 model.</p></section>
+<section class="panel owner-login">{% with messages=get_flashed_messages() %}{% for message in messages %}<p class="alert">{{ message }}</p>{% endfor %}{% endwith %}<form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token() }}"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Sign in</button></form></section>
+{% endblock %}

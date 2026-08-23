@@ -1,5 +1,5 @@
 from pathlib import Path
-import json
+import json,os
 
 SECTIONS={
  'Starting pitchers':('starter_quality','starter_recent','starter_workload','starter_matchup'),
@@ -14,7 +14,8 @@ def build_transparency(root,game,service,payload):
   for feature in service.features:
    p=by_name[feature];v=existing.get(feature);status=('IMPUTED' if v and v['imputed'] else 'VALID') if v else 'NOT_AVAILABLE'
    imputation=v.get('imputation_source') if v else None;source=p['source_dataset']+(f' · {imputation}' if imputation else '')
-   rows.append({'team_side':side,'team':team,'feature':feature,'raw_value':v.get('raw_value') if v else None,'final_value':v.get('final_value') if v else None,'status':status,'source':source,'as_of':v.get('feature_cutoff') if v else game.get('start_time'),'used':True,'family':p['family'],'imputation_source':imputation})
+   lineup_dependent=feature.startswith(('lineup_','opp_sp_matchup_','opp_arsenal_','opp_recent100_'));derivation=('DERIVED FROM PROBABLE LINEUP' if game.get('lineup_status')=='probable' else 'DERIVED FROM CONFIRMED LINEUP') if lineup_dependent else None
+   rows.append({'team_side':side,'team':team,'feature':feature,'raw_value':v.get('raw_value') if v else None,'final_value':v.get('final_value') if v else None,'status':status,'source':source+(f' · {derivation}' if derivation else ''),'as_of':v.get('feature_cutoff') if v else game.get('start_time'),'used':True,'family':p['family'],'imputation_source':imputation,'lineup_derivation':derivation})
  available=sum(r['status'] in ('VALID','IMPUTED') for r in rows);imputed=sum(r['status']=='IMPUTED' for r in rows);missing=len(rows)-available
  reason=game.get('forecast_message')
  build=payload.get('feature_build',{})
@@ -24,12 +25,14 @@ def build_transparency(root,game,service,payload):
  for r in rows:
   if r['status'] not in ('VALID','IMPUTED'):missing_rows.append({**r,'reason':reason or 'Validated source value unavailable.','eligible':True,'blocks':True})
  sections={name:[r for r in rows if r['family'] in families] for name,families in SECTIONS.items()}
- return {'rows':rows,'sections':sections,'missing':missing_rows,'counts':{'available':available,'required':100,'imputed':imputed,'missing':missing},'reason':reason,'refreshed':game.get('snapshot',{}).get('generated_at') or _mtime(root,game),'prediction_status':game.get('status') or game.get('forecast_status'),'lineups':game.get('lineup_counts',{}),'lineup_status':game.get('lineup_status','unavailable'),'batting_orders':_lineups(root,game),'diagnostics':game.get('diagnostics',[])}
+ return {'rows':rows,'sections':sections,'missing':missing_rows,'counts':{'available':available,'required':100,'imputed':imputed,'missing':missing},'reason':reason,'refreshed':game.get('snapshot',{}).get('generated_at') or _mtime(root,game),'prediction_status':game.get('status') or game.get('forecast_status'),'lineups':game.get('lineup_counts',{}),'lineup_status':game.get('lineup_status','unavailable'),'lineup_source':game.get('lineup_source'),'lineup_retrieved_at':game.get('lineup_retrieved_at'),'batting_orders':_lineups(root,game),'diagnostics':game.get('diagnostics',[]),'provisional_comparison':game.get('provisional_comparison')}
 def _mtime(root,game):
- path=root/'data/live'/str(game.get('date'))/'predictions.json'
+ path=Path(os.getenv('MLB_STATE_DIR',root/'data/live'))/str(game.get('date'))/'predictions.json'
  return __import__('datetime').datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat() if path.exists() else 'N/A'
 def _lineups(root,game):
- path=root/'data/live'/str(game.get('date'))/'boxscore_cache'/f"boxscore_{game['game_id']}.json";out={'away':[],'home':[]}
+ details=game.get('lineup_details')
+ if details:return {side:[{'order':p['order'],'name':p['name'],'position':p.get('position'),'player_id':p.get('player_id'),'source_player_id':p.get('source_player_id')} for p in details.get('teams',{}).get(side,[])] for side in ('away','home')}
+ path=Path(os.getenv('MLB_STATE_DIR',root/'data/live'))/str(game.get('date'))/'boxscore_cache'/f"boxscore_{game['game_id']}.json";out={'away':[],'home':[]}
  if not path.exists():return out
  data=json.loads(path.read_text())
  for side in out:

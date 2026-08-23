@@ -33,9 +33,14 @@ def schedule(day):
 
 def boxscores_and_identity(games,probables,workers=8):
  folder=CACHE/'boxscores';completed=games[games.away_score.notna()];targets=pd.concat([completed,games[games.date.eq(games.date.max())]]).drop_duplicates('game_id')
+ completed_ids=set(completed.game_id.astype(int))
+ def has_completed_stats(data):
+  return all(int(data.get('teams',{}).get(side,{}).get('teamStats',{}).get('batting',{}).get('atBats',0) or 0)>0 for side in ('away','home'))
  def fetch(gid):
   path=folder/f'{gid}.json'
-  if path.exists():return gid,json.loads(path.read_text())
+  if path.exists():
+   cached=json.loads(path.read_text())
+   if int(gid) not in completed_ids or has_completed_stats(cached):return gid,cached
   return gid,request_json(f'https://statsapi.mlb.com/api/v1/game/{gid}/boxscore',path)
  boxes={}
  with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -67,7 +72,8 @@ def statcast_refresh(games,day):
  folder=CACHE/'statcast_chunks';folder.mkdir(parents=True,exist_ok=True);start=pd.Timestamp(f'{YEAR}-03-01');end=min(pd.Timestamp(day),pd.Timestamp.now().normalize());parts=[]
  while start<=end:
   stop=min(start+pd.Timedelta(days=6),end);path=folder/f'{start.date()}_{stop.date()}.csv'
-  if not path.exists():
+  # Re-fetch the open tail so a chunk first cached mid-week cannot remain partial.
+  if not path.exists() or stop >= end-pd.Timedelta(days=7):
    data=statcast(start.strftime('%Y-%m-%d'),stop.strftime('%Y-%m-%d'))
    expected_games=games[pd.to_datetime(games.date).between(start,stop)&games.away_score.notna()]
    if data.empty and expected_games.empty:data=pd.DataFrame(columns=union)

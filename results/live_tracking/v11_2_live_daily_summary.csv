@@ -1,0 +1,2 @@
+date,predictions,winner_correct,winner_incorrect,winner_accuracy,team_run_MAE,team_run_RMSE,total_MAE,total_RMSE,mean_projected_total,mean_actual_total,60plus_predictions,60plus_correct,60plus_accuracy
+2026-08-22,1,1,0,1.0,1.4817893276006453,1.708346557012935,2.9635786552012906,2.9635786552012906,8.96357865520129,6.0,0,0,

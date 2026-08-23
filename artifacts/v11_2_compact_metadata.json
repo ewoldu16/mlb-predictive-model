@@ -2,6 +2,13 @@
   "model_version": "V11.2_COMPACT_TEAM_RUN",
   "artifact_format": "joblib",
   "artifact_sha256": "4249dfdf08b4326f051f8a845924048aab8d94aaa497a56c884cf65af7493dbf",
+  "runtime_versions": {
+    "joblib": "1.5.3",
+    "numpy": "2.5.2",
+    "pandas": "3.0.5",
+    "scikit-learn": "1.9.0",
+    "scipy": "1.18.0"
+  },
   "features": [
     "ctx_venue_l30_woba",
     "opp_sp_season_fastball_velocity",

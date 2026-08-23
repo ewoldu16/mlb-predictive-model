@@ -1,4 +1,5 @@
 from pathlib import Path
+from importlib.metadata import version
 import hashlib,json,joblib
 import numpy as np,pandas as pd
 from scipy.stats import nbinom
@@ -7,6 +8,8 @@ class ModelArtifactError(RuntimeError):pass
 class V112ModelService:
  def __init__(self,root):
   self.root=Path(root);self.meta=json.loads((self.root/'artifacts/v11_2_compact_metadata.json').read_text());path=self.root/'artifacts/v11_2_compact_pipeline.joblib'
+  mismatched={name:(expected,version(name)) for name,expected in self.meta.get('runtime_versions',{}).items() if version(name)!=expected}
+  if mismatched:raise ModelArtifactError(f'frozen model runtime version mismatch: {mismatched}')
   if hashlib.sha256(path.read_bytes()).hexdigest()!=self.meta['artifact_sha256']:raise ModelArtifactError('model artifact integrity check failed')
   self.pipeline=joblib.load(path);self.features=self.meta['features'];self.alpha=self.meta['negative_binomial']['dispersion_alpha_training_only']
  def validate_features(self,frame):

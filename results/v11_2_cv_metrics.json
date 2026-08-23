@@ -1,0 +1,15 @@
+{
+  "historical_games_processed": 12148,
+  "team_game_observations": 24296,
+  "official_pitcher_game_records": 104627,
+  "original_feature_count": 173,
+  "compact_feature_count": 50,
+  "feature_reduction_pct": 0.7109826589595376,
+  "development_rmse": 3.1035864542959923,
+  "untouched_2025_rmse": 3.2226151056081127,
+  "untouched_2025_mae": 2.5247014824933953,
+  "game_total_rmse": 4.570697090094105,
+  "winner_auc": 0.5631745130540347,
+  "chronological_validation_folds": 3,
+  "sportsbook_data_used": false
+}
