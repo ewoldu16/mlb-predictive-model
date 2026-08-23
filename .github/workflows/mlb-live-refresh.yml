@@ -70,6 +70,9 @@ jobs:
       - name: Install runtime
         run: python -m pip install -r requirements.txt
 
+      - name: Runtime dependency import preflight
+        run: python runtime_import_preflight.py
+
       - name: Sanitized database configuration and connectivity preflight
         run: python diagnose_database_connection.py
 
@@ -84,7 +87,7 @@ jobs:
 
       - name: Syntax and artifact integrity checks
         run: |
-          python -m py_compile diagnose_database_connection.py github_actions_refresh.py mlb_app/storage.py mlb_app/live_pipeline.py
+          python -m py_compile runtime_import_preflight.py diagnose_database_connection.py github_actions_refresh.py mlb_app/storage.py mlb_app/live_pipeline.py
           python validate-v11-2-artifact-fixture.py
 
       - name: Save refreshed daily cache
