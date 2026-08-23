@@ -44,6 +44,7 @@ jobs:
         shell: bash
         run: |
           echo "slot=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          echo "run=${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore resumable current-season cache
         id: live-cache
@@ -63,8 +64,10 @@ jobs:
             data/live
             results/live_tracking
             ~/.pybaseball
-          key: mlb-live-${{ runner.os }}-v4-${{ steps.cache-slot.outputs.slot }}
+          key: mlb-live-${{ runner.os }}-v5-${{ steps.cache-slot.outputs.slot }}-${{ steps.cache-slot.outputs.run }}
           restore-keys: |
+            mlb-live-${{ runner.os }}-v5-${{ steps.cache-slot.outputs.slot }}-
+            mlb-live-${{ runner.os }}-v5-
             mlb-live-${{ runner.os }}-v4-
 
       - name: Install runtime
@@ -108,4 +111,4 @@ jobs:
             data/live
             results/live_tracking
             ~/.pybaseball
-          key: mlb-live-${{ runner.os }}-v4-${{ steps.cache-slot.outputs.slot }}
+          key: mlb-live-${{ runner.os }}-v5-${{ steps.cache-slot.outputs.slot }}-${{ steps.cache-slot.outputs.run }}

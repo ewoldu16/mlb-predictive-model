@@ -3,9 +3,45 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import math
 import os
 
 _initialized = False
+
+
+def normalize_json_value(value):
+    """Recursively enforce the persisted JSON contract.
+
+    Undefined pandas/numpy values and non-finite numerics become JSON null.
+    Finite numeric values remain numeric rather than being stringified.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, dict):
+        return {key: normalize_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [normalize_json_value(item) for item in value]
+    try:
+        import numpy as np
+        if isinstance(value, np.generic):
+            return normalize_json_value(value.item())
+    except ImportError:
+        pass
+    try:
+        import pandas as pd
+        missing = pd.isna(value)
+        if isinstance(missing, bool) and missing:
+            return None
+    except (ImportError, TypeError, ValueError):
+        pass
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
+
+
+def json_payload(payload, **kwargs):
+    """Serialize normalized state while retaining strict JSON validation."""
+    return json.dumps(normalize_json_value(payload), allow_nan=False, **kwargs)
 
 
 def database_url():
@@ -128,7 +164,7 @@ def save_snapshot(game):
         connection.execute(
             "INSERT INTO prediction_snapshots(game_id, game_date, payload) "
             "VALUES (%s, %s, %s::jsonb) ON CONFLICT (game_id) DO NOTHING",
-            (int(game["game_id"]), game["date"], json.dumps(game, allow_nan=False)),
+            (int(game["game_id"]), game["date"], json_payload(game)),
         )
     return True
 
@@ -159,7 +195,7 @@ def save_provisional_snapshot(game):
         connection.execute(
             "INSERT INTO provisional_prediction_snapshots(game_id, game_date, payload, updated_at) VALUES (%s,%s,%s::jsonb,NOW()) "
             "ON CONFLICT (game_id) DO UPDATE SET payload=EXCLUDED.payload, updated_at=NOW()",
-            (int(game['game_id']),game['date'],json.dumps(game,allow_nan=False)))
+            (int(game['game_id']),game['date'],json_payload(game)))
     return True
 
 
@@ -177,7 +213,7 @@ def save_owner_lineup(game_id, team_side, payload):
         connection.execute(
             "INSERT INTO owner_lineups(game_id,team_side,payload,updated_at) VALUES (%s,%s,%s::jsonb,NOW()) "
             "ON CONFLICT(game_id,team_side) DO UPDATE SET payload=EXCLUDED.payload,updated_at=NOW()",
-            (int(game_id),team_side,json.dumps(payload,allow_nan=False)))
+            (int(game_id),team_side,json_payload(payload)))
         for player_id,status in payload.get('availability',{}).items():
             connection.execute("INSERT INTO owner_player_availability(game_id,team_side,player_id,availability,updated_at) VALUES (%s,%s,%s,%s,NOW()) ON CONFLICT(game_id,team_side,player_id) DO UPDATE SET availability=EXCLUDED.availability,updated_at=NOW()",(int(game_id),team_side,int(player_id),status))
     return True
@@ -195,7 +231,7 @@ def append_owner_audit(entry):
     if not database_url(): return False
     initialize()
     with _connect() as connection:
-        connection.execute("INSERT INTO owner_audit_log(game_id,team_side,owner_id,payload) VALUES (%s,%s,%s,%s::jsonb)",(int(entry['game_id']),entry.get('team_side'),entry['owner_id'],json.dumps(entry,allow_nan=False)))
+        connection.execute("INSERT INTO owner_audit_log(game_id,team_side,owner_id,payload) VALUES (%s,%s,%s,%s::jsonb)",(int(entry['game_id']),entry.get('team_side'),entry['owner_id'],json_payload(entry)))
     return True
 
 
@@ -213,10 +249,10 @@ def append_provisional_history(game):
         from pathlib import Path
         root=Path(os.getenv('MLB_STATE_DIR','data/live'))/'owner'/'provisional_history'/str(int(game['game_id']));root.mkdir(parents=True,exist_ok=True)
         stamp=str(game.get('snapshot',{}).get('generated_at') or datetime.now(timezone.utc).isoformat()).replace(':','-')
-        path=root/f"version_{game.get('owner_lineup_version') or 0}_{stamp}.json";path.write_text(json.dumps(game,indent=2,allow_nan=False),encoding='utf-8');return True
+        path=root/f"version_{game.get('owner_lineup_version') or 0}_{stamp}.json";path.write_text(json_payload(game,indent=2),encoding='utf-8');return True
     initialize()
     with _connect() as connection:
-        connection.execute("INSERT INTO provisional_prediction_history(game_id,game_date,lineup_version,payload) VALUES (%s,%s,%s,%s::jsonb)",(int(game['game_id']),game['date'],game.get('owner_lineup_version'),json.dumps(game,allow_nan=False)))
+        connection.execute("INSERT INTO provisional_prediction_history(game_id,game_date,lineup_version,payload) VALUES (%s,%s,%s,%s::jsonb)",(int(game['game_id']),game['date'],game.get('owner_lineup_version'),json_payload(game)))
     return True
 
 
@@ -224,7 +260,7 @@ def queue_rebuild_request(game_id,payload,reason='owner_lineup_changed'):
     if not database_url():return save_state('owner_rebuild_request:'+str(int(game_id)),{'status':'queued','reason':reason,**payload})
     initialize()
     with _connect() as connection:
-        connection.execute("INSERT INTO rebuild_requests(game_id,status,reason,payload,requested_at,completed_at) VALUES (%s,'queued',%s,%s::jsonb,NOW(),NULL) ON CONFLICT(game_id) DO UPDATE SET status='queued',reason=EXCLUDED.reason,payload=EXCLUDED.payload,requested_at=NOW(),completed_at=NULL",(int(game_id),reason,json.dumps(payload,allow_nan=False)))
+        connection.execute("INSERT INTO rebuild_requests(game_id,status,reason,payload,requested_at,completed_at) VALUES (%s,'queued',%s,%s::jsonb,NOW(),NULL) ON CONFLICT(game_id) DO UPDATE SET status='queued',reason=EXCLUDED.reason,payload=EXCLUDED.payload,requested_at=NOW(),completed_at=NULL",(int(game_id),reason,json_payload(payload)))
     return True
 
 
@@ -258,7 +294,7 @@ def save_state(key, payload):
             "INSERT INTO operational_state(state_key, payload, updated_at) "
             "VALUES (%s, %s::jsonb, NOW()) ON CONFLICT (state_key) DO UPDATE "
             "SET payload=EXCLUDED.payload, updated_at=NOW()",
-            (key, json.dumps(payload, allow_nan=False)),
+            (key, json_payload(payload)),
         )
     return True
 

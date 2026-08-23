@@ -12,6 +12,7 @@ def test_actions_workflow_is_scheduled_manual_cached_and_secret_safe():
  for required in ('workflow_dispatch:','schedule:','actions/cache/restore@v4','actions/cache/save@v4','github_actions_refresh.py','secrets.SUPABASE_DATABASE_URL','pip install -r requirements.txt','runtime_import_preflight.py'):assert required in text
  assert 'ROTOWIRE_API_KEY' not in text and 'contents: write' not in text
  assert '*/15' in text and '*/30' in text
+ assert 'github.run_id' in text and 'github.run_attempt' in text and 'if: always()' in text
 
 def test_supabase_url_alias(monkeypatch):
  from mlb_app.storage import database_url

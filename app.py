@@ -46,9 +46,15 @@ def create_app(test_config=None):
  @app.context_processor
  def owner_context():return {'csrf_token':lambda:csrf_token(session)}
  @app.template_filter('pct')
- def pct(x,d=1):return f'{float(x)*100:.{d}f}%'
+ def pct(x,d=1):
+  try:value=float(x)
+  except (TypeError,ValueError):return 'N/A'
+  return f'{value*100:.{d}f}%' if pd.notna(value) and value not in (float('inf'),float('-inf')) else 'N/A'
  @app.template_filter('num')
- def num(x,d=2):return f'{float(x):.{d}f}'
+ def num(x,d=2):
+  try:value=float(x)
+  except (TypeError,ValueError):return 'N/A'
+  return f'{value:.{d}f}' if pd.notna(value) and value not in (float('inf'),float('-inf')) else 'N/A'
  @app.route('/')
  def home():return render_template('home_current.html',payload=load_today(ROOT),performance=performance,refresh=health_state())
  @app.route('/game/<int:game_id>')
