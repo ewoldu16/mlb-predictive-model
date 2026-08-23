@@ -1,0 +1,108 @@
+name: MLB live refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_season_refresh:
+        description: Force the resumable current-season source refresh
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    # GitHub cron is UTC. Poll lightly before the main window, every 15 minutes
+    # through common lineup/game hours, and stop after 05:59 UTC.
+    - cron: "*/30 12-15 * 3-11 *"
+    - cron: "*/15 16-23 * 3-11 *"
+    - cron: "*/15 0-5 * 3-11 *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlb-live-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+      MLB_STATE_DIR: data/live
+      PYTHONWARNINGS: ignore
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Select daily cache generation
+        id: cache-slot
+        shell: bash
+        run: |
+          echo "slot=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore resumable current-season cache
+        id: live-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/raw/live_2026
+            data/raw/games_2026.csv
+            data/raw/starting_pitchers_2026.csv
+            data/raw/statcast_2026.csv
+            data/raw/statcast_enriched_2026.csv
+            data/raw/pitching/statcast_pitches_2026.csv
+            data/raw/lineups/2026
+            data/raw/lineups/starting_lineups_2026.csv
+            data/raw/official_mlb_pitching/official_pitcher_game_lines_2026.csv
+            data/processed/*2026*.csv
+            data/live
+            results/live_tracking
+            ~/.pybaseball
+          key: mlb-live-${{ runner.os }}-v4-${{ steps.cache-slot.outputs.slot }}
+          restore-keys: |
+            mlb-live-${{ runner.os }}-v4-
+
+      - name: Install runtime
+        run: python -m pip install -r requirements.txt
+
+      - name: Validate required secret
+        shell: bash
+        run: test -n "$DATABASE_URL" || { echo "SUPABASE_DATABASE_URL is required"; exit 1; }
+
+      - name: Refresh sources, features and frozen forecasts
+        shell: bash
+        run: |
+          args=()
+          if [[ "${{ inputs.force_season_refresh || 'false' }}" == "true" ]]; then
+            args+=(--force-season-refresh)
+          fi
+          python github_actions_refresh.py "${args[@]}"
+
+      - name: Syntax and artifact integrity checks
+        run: |
+          python -m py_compile github_actions_refresh.py mlb_app/storage.py mlb_app/live_pipeline.py
+          python validate-v11-2-artifact-fixture.py
+
+      - name: Save refreshed daily cache
+        if: always() && steps.live-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/raw/live_2026
+            data/raw/games_2026.csv
+            data/raw/starting_pitchers_2026.csv
+            data/raw/statcast_2026.csv
+            data/raw/statcast_enriched_2026.csv
+            data/raw/pitching/statcast_pitches_2026.csv
+            data/raw/lineups/2026
+            data/raw/lineups/starting_lineups_2026.csv
+            data/raw/official_mlb_pitching/official_pitcher_game_lines_2026.csv
+            data/processed/*2026*.csv
+            data/live
+            results/live_tracking
+            ~/.pybaseball
+          key: mlb-live-${{ runner.os }}-v4-${{ steps.cache-slot.outputs.slot }}

@@ -9,7 +9,7 @@ _initialized = False
 
 
 def database_url():
-    return os.getenv("DATABASE_URL", "").strip()
+    return (os.getenv("SUPABASE_DATABASE_URL") or os.getenv("DATABASE_URL", "")).strip()
 
 
 def _connect():
@@ -48,13 +48,42 @@ def initialize():
             )
         """)
         connection.execute("""
-            CREATE TABLE IF NOT EXISTS owner_lineup_state (
+            CREATE TABLE IF NOT EXISTS owner_lineups (
                 game_id BIGINT NOT NULL,
                 team_side TEXT NOT NULL CHECK (team_side IN ('away','home')),
                 payload JSONB NOT NULL,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (game_id, team_side)
             )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS owner_player_availability (
+                game_id BIGINT NOT NULL,
+                team_side TEXT NOT NULL CHECK (team_side IN ('away','home')),
+                player_id BIGINT NOT NULL,
+                availability TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (game_id, team_side, player_id)
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS rebuild_requests (
+                game_id BIGINT PRIMARY KEY,
+                requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                status TEXT NOT NULL,
+                reason TEXT,
+                payload JSONB NOT NULL,
+                completed_at TIMESTAMPTZ
+            )
+        """)
+        connection.execute("""
+            DO $$ BEGIN
+                IF to_regclass('public.owner_lineup_state') IS NOT NULL THEN
+                    INSERT INTO owner_lineups(game_id,team_side,payload,updated_at)
+                    SELECT game_id,team_side,payload,updated_at FROM owner_lineup_state
+                    ON CONFLICT(game_id,team_side) DO NOTHING;
+                END IF;
+            END $$
         """)
         connection.execute("""
             CREATE TABLE IF NOT EXISTS owner_audit_log (
@@ -105,6 +134,13 @@ def load_snapshot(game_id):
     return row[0] if row else None
 
 
+def load_snapshots_for_date(game_date):
+    if not database_url():return []
+    initialize()
+    with _connect() as connection:rows=connection.execute("SELECT payload FROM prediction_snapshots WHERE game_date=%s ORDER BY game_id",(game_date,)).fetchall()
+    return [row[0] for row in rows]
+
+
 def save_provisional_snapshot(game):
     """Provisional forecasts may update before first pitch; finals never do."""
     if not database_url(): return False
@@ -129,9 +165,11 @@ def save_owner_lineup(game_id, team_side, payload):
     initialize()
     with _connect() as connection:
         connection.execute(
-            "INSERT INTO owner_lineup_state(game_id,team_side,payload,updated_at) VALUES (%s,%s,%s::jsonb,NOW()) "
+            "INSERT INTO owner_lineups(game_id,team_side,payload,updated_at) VALUES (%s,%s,%s::jsonb,NOW()) "
             "ON CONFLICT(game_id,team_side) DO UPDATE SET payload=EXCLUDED.payload,updated_at=NOW()",
             (int(game_id),team_side,json.dumps(payload,allow_nan=False)))
+        for player_id,status in payload.get('availability',{}).items():
+            connection.execute("INSERT INTO owner_player_availability(game_id,team_side,player_id,availability,updated_at) VALUES (%s,%s,%s,%s,NOW()) ON CONFLICT(game_id,team_side,player_id) DO UPDATE SET availability=EXCLUDED.availability,updated_at=NOW()",(int(game_id),team_side,int(player_id),status))
     return True
 
 
@@ -139,7 +177,7 @@ def load_owner_lineup(game_id, team_side):
     if not database_url(): return None
     initialize()
     with _connect() as connection:
-        row=connection.execute("SELECT payload FROM owner_lineup_state WHERE game_id=%s AND team_side=%s",(int(game_id),team_side)).fetchone()
+        row=connection.execute("SELECT payload FROM owner_lineups WHERE game_id=%s AND team_side=%s",(int(game_id),team_side)).fetchone()
     return row[0] if row else None
 
 
@@ -169,6 +207,35 @@ def append_provisional_history(game):
     initialize()
     with _connect() as connection:
         connection.execute("INSERT INTO provisional_prediction_history(game_id,game_date,lineup_version,payload) VALUES (%s,%s,%s,%s::jsonb)",(int(game['game_id']),game['date'],game.get('owner_lineup_version'),json.dumps(game,allow_nan=False)))
+    return True
+
+
+def queue_rebuild_request(game_id,payload,reason='owner_lineup_changed'):
+    if not database_url():return save_state('owner_rebuild_request:'+str(int(game_id)),{'status':'queued','reason':reason,**payload})
+    initialize()
+    with _connect() as connection:
+        connection.execute("INSERT INTO rebuild_requests(game_id,status,reason,payload,requested_at,completed_at) VALUES (%s,'queued',%s,%s::jsonb,NOW(),NULL) ON CONFLICT(game_id) DO UPDATE SET status='queued',reason=EXCLUDED.reason,payload=EXCLUDED.payload,requested_at=NOW(),completed_at=NULL",(int(game_id),reason,json.dumps(payload,allow_nan=False)))
+    return True
+
+
+def pending_rebuild_requests():
+    if not database_url():return []
+    initialize()
+    with _connect() as connection:rows=connection.execute("SELECT game_id,payload,reason,requested_at FROM rebuild_requests WHERE status='queued' ORDER BY requested_at").fetchall()
+    return [{'game_id':int(row[0]),'payload':row[1],'reason':row[2],'requested_at':row[3].isoformat()} for row in rows]
+
+
+def load_rebuild_request(game_id):
+    if not database_url():return load_state('owner_rebuild_request:'+str(int(game_id)))
+    initialize()
+    with _connect() as connection:row=connection.execute("SELECT status,reason,payload,requested_at,completed_at FROM rebuild_requests WHERE game_id=%s",(int(game_id),)).fetchone()
+    return {'game_id':int(game_id),'status':row[0],'reason':row[1],'payload':row[2],'requested_at':row[3].isoformat(),'completed_at':row[4].isoformat() if row[4] else None} if row else None
+
+
+def finish_rebuild_request(game_id,status='complete',reason=None):
+    if not database_url():return save_state('owner_rebuild_request:'+str(int(game_id)),{'game_id':int(game_id),'status':status,'reason':reason,'completed_at':datetime.now(timezone.utc).isoformat()})
+    initialize()
+    with _connect() as connection:connection.execute("UPDATE rebuild_requests SET status=%s,reason=COALESCE(%s,reason),completed_at=NOW() WHERE game_id=%s",(status,reason,int(game_id)))
     return True
 
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import argparse,importlib.util,json,time
 import pandas as pd
 from mlb_app.live_pipeline import atomic_json,confirmed_lineup_details,fetch_schedule,fetch_lineup_status
+from mlb_app.storage import save_state
 from mlb_app.probable_lineups import fetch_probable_lineups,lineup_fingerprint
 from mlb_app.owner_controls import owner_lineup_for_game
 
@@ -47,7 +48,7 @@ def run(day):
  if not eligible:return {'eligible':[],'seconds':time.perf_counter()-started,'status':'no_unstarted_confirmed_lineups'}
  spec=importlib.util.spec_from_file_location('refresh',ROOT/'refresh-v11-2-2026-features.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
  for script in BUILDERS:module.run_builder(script)
- for row in eligible:atomic_json(row,ROOT/'data/live'/day/f"lineup_build_{row['game_id']}.json")
+ for row in eligible:atomic_json(row,ROOT/'data/live'/day/f"lineup_build_{row['game_id']}.json");save_state('lineup_build:'+str(row['game_id']),row)
  return {'eligible':eligible,'seconds':time.perf_counter()-started,'status':'complete'}
 def main():
  p=argparse.ArgumentParser();p.add_argument('--date',default=datetime.now().date().isoformat());a=p.parse_args();result=run(a.date);print(json.dumps(result,indent=2))

@@ -8,7 +8,7 @@ from mlb_app.model_service import V112ModelService
 from mlb_app.performance import load_performance
 from mlb_app.live_pipeline import load_today
 from mlb_app.transparency import build_transparency
-from mlb_app.storage import database_url,health_state,save_state
+from mlb_app.storage import database_url,health_state,load_rebuild_request,queue_rebuild_request
 from mlb_app.live_tracking import load_live_tracking
 from mlb_app.owner_controls import AVAILABILITY_STATUSES,audit_history,bootstrap_team,csrf_token,load_team_state,locked,offense_confidence,record_rebuild,replacement_suggestions,save_lineup,save_team_state,set_availability
 from mlb_app.refresh_service import refresh_cycle
@@ -32,9 +32,9 @@ def create_app(test_config=None):
  def game_by_id(game_id):return next((x for x in load_today(ROOT).get('games',[]) if int(x['game_id'])==int(game_id)),None)
  def rebuild_if_ready(game):
   states={side:load_team_state(ROOT,game['game_id'],side) for side in ('away','home')}
-  if not all(states.values()) or not all(s.get('valid') for s in states.values()):return None
   if database_url():
-   save_state('owner_rebuild_request:'+str(int(game['game_id'])),{'game_id':int(game['game_id']),'date':game['date'],'requested_at':pd.Timestamp.utcnow().isoformat(),'lineup_versions':{side:states[side]['version'] for side in states}});return None
+   valid=bool(all(states.values()) and all(s.get('valid') for s in states.values()));queue_rebuild_request(game['game_id'],{'game_id':int(game['game_id']),'date':game['date'],'requested_at':pd.Timestamp.utcnow().isoformat(),'valid':valid,'lineup_versions':{side:states[side]['version'] for side in states if states[side]}},'owner_lineup_changed' if valid else 'PROVISIONAL_LINEUP_INCOMPLETE');return None
+  if not all(states.values()) or not all(s.get('valid') for s in states.values()):return None
   before=game_by_id(game['game_id']);payload=refresh_cycle(ROOT,service,game['date']);after=next((x for x in payload.get('games',[]) if int(x['game_id'])==int(game['game_id'])),None)
   if before and after and before.get('prediction') and after.get('prediction'):
    def raw(snapshot,side,feature):return next((x.get('raw_value') for x in snapshot.get('feature_vectors',{}).get(side,[]) if x.get('feature')==feature),None)
@@ -50,7 +50,7 @@ def create_app(test_config=None):
  @app.template_filter('num')
  def num(x,d=2):return f'{float(x):.{d}f}'
  @app.route('/')
- def home():return render_template('home_current.html',payload=load_today(ROOT),performance=performance)
+ def home():return render_template('home_current.html',payload=load_today(ROOT),performance=performance,refresh=health_state())
  @app.route('/game/<int:game_id>')
  def game_detail(game_id):
   live=next((x for x in load_today(ROOT).get('games',[]) if x['game_id']==game_id),None)
@@ -86,7 +86,7 @@ def create_app(test_config=None):
  def owner_dashboard():
   payload=load_today(ROOT);games=[]
   for game in payload.get('games',[]):
-   states={side:load_team_state(ROOT,game['game_id'],side) for side in ('away','home')};games.append({'game':game,'states':states,'locked':locked(game)})
+   states={side:load_team_state(ROOT,game['game_id'],side) for side in ('away','home')};games.append({'game':game,'states':states,'locked':locked(game),'rebuild':load_rebuild_request(game['game_id'])})
   return render_template('owner_dashboard.html',date=payload.get('date'),games=games)
  @app.route('/owner/game/<int:game_id>/<side>')
  @owner_required
@@ -152,7 +152,7 @@ def create_app(test_config=None):
  @app.route('/health')
  def health():
   refresh=health_state()
-  return jsonify({'healthy':True,'model_loaded':True,'model_version':service.meta['model_version'],'artifact_verified':True,'persistence':'postgres' if database_url() else 'local_filesystem','last_successful_live_refresh':refresh.get('last_successful_refresh'),'refresh_status':refresh.get('status','unknown')})
+  return jsonify({'healthy':True,'model_loaded':True,'model_version':service.meta['model_version'],'artifact_verified':True,'persistence':'supabase_postgres' if database_url() else 'local_filesystem','refresh_executor':'github_actions' if database_url() else 'local_manual','last_successful_live_refresh':refresh.get('last_successful_refresh'),'refresh_status':refresh.get('status','unknown'),'current_data_date':refresh.get('current_data_date')})
  @app.route('/api/predictions/history')
  def api_history():
   h=history();season=request.args.get('season',type=int);team=request.args.get('team','')

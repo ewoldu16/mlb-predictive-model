@@ -95,48 +95,65 @@ gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 2 --threads 4 --timeout 120 app:
 `run_site.py` remains a local launcher. It respects `PORT` and `HOST`; Render
 does not use Flask's development server.
 
-## Public deployment
+## Free-tier public deployment
 
-The project is prepared for Render through `render.yaml`, which declares:
+The production design targets $0/month using three independently replaceable
+services:
 
-1. `mlb-v11-2-web`, a Gunicorn web service.
-2. `mlb-v11-2-refresh`, one dedicated 10-minute refresh worker with a 10 GB
-   persistent disk mounted at `/opt/render/project/src/data`.
-3. `mlb-v11-2-db`, a small Render Postgres database shared by web and worker.
+1. One Render **Free** Gunicorn web service from `render.yaml`.
+2. Supabase Free PostgreSQL for operational state and immutable snapshots.
+3. GitHub Actions scheduled/manual one-shot refresh jobs.
 
-The worker alone owns schedule and lineup polling. A PostgreSQL advisory lock
-prevents duplicate workers. It refreshes current-season public source state once
-per UTC day and checks starter and confirmed-lineup readiness every 600 seconds.
+The Render process serves pages and owner mutations only. It never downloads
+Statcast or runs feature builders. Owner edits are committed immediately to
+Supabase and create a queued rebuild request. The next Action processes that
+request; the website communicates an expected delay of roughly 15 minutes without
+promising an exact execution time.
 
-Postgres stores the latest daily payload, refresh status, and immutable per-game
-prediction snapshots. Snapshot insertion uses `ON CONFLICT DO NOTHING`, so a
-restart or deployment cannot replace an existing forecast. The worker disk stores
-resumable public MLB/Statcast downloads and feature caches.
+`.github/workflows/mlb-live-refresh.yml` runs every 30 minutes from 12:00–15:59
+UTC, every 15 minutes from 16:00–05:59 UTC, only during March–November, plus
+manual `workflow_dispatch`. GitHub cron is UTC and may run late. A versioned
+daily Actions cache retains only current-season source chunks, normalized
+2026 tables, processed 2026 feature layers, live snapshots, and tracking state.
 
-No 2021-2025 raw research dataset is required in deployment. Initial worker start
-does acquire the current 2026 regular-season public data required by the exact
-feature definitions, so the first bootstrap can take substantially longer than
-later resumable refreshes.
+The first cache miss performs the resumable current-season bootstrap. Later jobs
+run the full season refresh only when the UTC date changes or today's completed
+game universe advances. Routine lineup polls do not redownload the season.
 
-### Exact Render steps
+Supabase is accessed through its PostgreSQL connection string; no Supabase browser
+key is exposed. Final snapshots use insert-once `ON CONFLICT DO NOTHING` semantics.
 
-1. Commit and push these deployment changes.
-2. In Render, select **New > Blueprint**.
-3. Connect `ewoldu16/mlb-predictive-model` and select the repository root.
-4. Review and apply the three resources from `render.yaml`.
-5. Do not manually enter `DATABASE_URL`; the Blueprint supplies the internal
-   connection string to both services.
-6. Wait for the web health check and the worker's initial current-season refresh.
-7. Open `https://<your-render-host>/health`. Confirm `model_loaded` and
-   `artifact_verified` are `true`; `refresh_status` should become `ok` after a
-   successful worker cycle.
+### Required secrets
 
-Render supplies `PORT` automatically. No MLB API key is required. Safe local
-configuration examples are listed in `.env.example`; never commit a real `.env`.
+GitHub repository Actions secret:
 
-The `/health` endpoint reports model readiness, model version, artifact integrity,
-persistence mode, last successful refresh, and current refresh status without
-exposing paths, credentials, or database details.
+- `SUPABASE_DATABASE_URL`
+
+Render environment variables:
+
+- `SUPABASE_DATABASE_URL`
+- `OWNER_USERNAME`
+- `OWNER_PASSWORD_HASH`
+- `SECRET_KEY` (the Blueprint can generate this)
+- `OWNER_SESSION_MINUTES` (defaults to 30)
+
+No RotoWire key is required. The adapter remains optional and inactive without a
+key; owner-managed provisional orders are the supported free fallback.
+
+### Deployment sequence
+
+1. Create a Supabase Free project and copy its server-side PostgreSQL connection
+   string, preferably the documented pooler URL suitable for transient clients.
+2. Add it to GitHub Actions as `SUPABASE_DATABASE_URL`.
+3. Run **MLB live refresh** manually once. This creates/migrates the schema and
+   warms the current-season cache.
+4. Create the single Render Free web service from `render.yaml`.
+5. Set the Render variables above using the same Supabase connection string.
+6. Open `/health` and confirm `persistence=supabase_postgres`,
+   `refresh_executor=github_actions`, and a recent successful refresh.
+
+Free tiers, quotas, sleep policies, and Actions policies can change. See
+`results/deployment_free_tier_report.md` for limits and cost assumptions.
 
 ## Probable-lineup forecasts
 

@@ -18,6 +18,7 @@ results/live_tracking/*
 !results/v11_2_confidence_cumulative_levels.csv
 !results/v11_2_confidence_oos_game_predictions_2022_2025.csv
 !results/v11_2_live_feature_provenance.json
+!results/deployment_free_tier_report.md
 !results/v11_2_compact_frozen_specification.json
 !results/figures/
 results/figures/*
