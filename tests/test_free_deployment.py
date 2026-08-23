@@ -17,6 +17,12 @@ def test_supabase_url_alias(monkeypatch):
  from mlb_app.storage import database_url
  monkeypatch.delenv('DATABASE_URL',raising=False);monkeypatch.setenv('SUPABASE_DATABASE_URL','postgresql://example.invalid/db');assert database_url()=='postgresql://example.invalid/db'
 
+def test_conflicting_database_urls_fail_closed(monkeypatch):
+ import pytest
+ from mlb_app.storage import database_url
+ monkeypatch.setenv('SUPABASE_DATABASE_URL','postgresql://one.invalid/db');monkeypatch.setenv('DATABASE_URL','postgresql://two.invalid/db')
+ with pytest.raises(RuntimeError,match='Conflicting'):database_url()
+
 def test_cache_refresh_decision_is_daily_not_every_completed_game(monkeypatch,tmp_path):
  import github_actions_refresh as worker
  monkeypatch.setattr(worker,'ROOT',tmp_path);monkeypatch.setenv('MLB_STATE_DIR',str(tmp_path/'live'))

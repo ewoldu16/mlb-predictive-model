@@ -9,7 +9,17 @@ _initialized = False
 
 
 def database_url():
-    return (os.getenv("SUPABASE_DATABASE_URL") or os.getenv("DATABASE_URL", "")).strip()
+    """Return the configured DSN verbatim and reject ambiguous configuration."""
+    supabase_url = os.getenv("SUPABASE_DATABASE_URL") or None
+    legacy_url = os.getenv("DATABASE_URL") or None
+    if supabase_url and legacy_url and supabase_url != legacy_url:
+        raise RuntimeError(
+            "Conflicting SUPABASE_DATABASE_URL and DATABASE_URL values are set"
+        )
+    selected = supabase_url or legacy_url or ""
+    if selected and selected != selected.strip():
+        raise RuntimeError("Database URL contains leading or trailing whitespace")
+    return selected
 
 
 def _connect():
