@@ -92,6 +92,9 @@ def generate_predictions(root,service,day=None,refresh=True):
    results.append(stored_provisional);continue
   marker_path=folder/f'lineup_build_{gid}.json';marker=json.loads(marker_path.read_text()) if marker_path.exists() else (load_state('lineup_build:'+str(gid)) or {});needs_rebuild=bool(lineup and (marker.get('lineup_fingerprint')!=fingerprint or marker.get('lineup_status')!=lineup_status))
   item={**g,'status':state,'forecast_status':state.lower(),'forecast_message':message,'forecast_type':None,'lineup_status':lineup_status,'lineup_counts':lineup_counts,'lineup_details':lineup,'lineup_source':lineup.get('source') if lineup else None,'lineup_retrieved_at':lineup.get('retrieval_timestamp') if lineup else None,'lineup_fingerprint':fingerprint,'owner_lineup_version':lineup.get('owner_lineup_version') if lineup else None,'owner_modified':lineup.get('owner_modified',False) if lineup else False,'prediction':None}
+  if state in {'IN_PROGRESS','FINAL','POSTPONED'}:
+   item['forecast_message']='No immutable pregame forecast was available before first pitch.' if state in {'IN_PROGRESS','FINAL'} else message
+   results.append(item);continue
   if needs_rebuild:
    item['status']='INSUFFICIENT_DATA';item['forecast_status']='insufficient_data';item['forecast_message']='Lineup changed; exact frozen features are being rebuilt.';item['lineup_needs_rebuild']=True;results.append(item);continue
   if state in {'SCHEDULED','PROVISIONAL_PREDICTION'} and features is not None:

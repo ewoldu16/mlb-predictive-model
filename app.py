@@ -1,21 +1,21 @@
 from pathlib import Path
 from flask import Flask,render_template,jsonify,request,abort,send_from_directory,redirect,url_for,session,flash
 from functools import wraps
-from datetime import timedelta
+from datetime import date,timedelta
 from werkzeug.security import check_password_hash
 import hmac,json,os,pandas as pd
 from mlb_app.model_service import V112ModelService
 from mlb_app.performance import load_performance
 from mlb_app.live_pipeline import load_today
 from mlb_app.transparency import build_transparency
-from mlb_app.storage import database_url,health_state,load_rebuild_request,queue_rebuild_request
+from mlb_app.storage import database_url,health_state,load_rebuild_request,persistence_health,queue_rebuild_request
 from mlb_app.live_tracking import load_live_tracking
 from mlb_app.owner_controls import AVAILABILITY_STATUSES,audit_history,bootstrap_team,csrf_token,load_team_state,locked,offense_confidence,record_rebuild,replacement_suggestions,save_lineup,save_team_state,set_availability
 from mlb_app.refresh_service import refresh_cycle
 
 ROOT=Path(__file__).resolve().parent
 def create_app(test_config=None):
- app=Flask(__name__,template_folder='website/templates',static_folder='website/static');app.config.update(JSON_SORT_KEYS=False,SECRET_KEY=os.getenv('SECRET_KEY') or os.urandom(32),OWNER_USERNAME=os.getenv('OWNER_USERNAME'),OWNER_PASSWORD_HASH=os.getenv('OWNER_PASSWORD_HASH'),PERMANENT_SESSION_LIFETIME=timedelta(minutes=int(os.getenv('OWNER_SESSION_MINUTES','30'))),SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE='Strict',SESSION_COOKIE_SECURE=os.getenv('FLASK_ENV')=='production' or bool(os.getenv('RENDER')))
+ app=Flask(__name__,template_folder=str(ROOT/'website/templates'),static_folder=str(ROOT/'website/static'),static_url_path='/static');app.config.update(JSON_SORT_KEYS=False,SECRET_KEY=os.getenv('SECRET_KEY') or os.urandom(32),OWNER_USERNAME=os.getenv('OWNER_USERNAME'),OWNER_PASSWORD_HASH=os.getenv('OWNER_PASSWORD_HASH'),PERMANENT_SESSION_LIFETIME=timedelta(minutes=int(os.getenv('OWNER_SESSION_MINUTES','30'))),SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE='Strict',SESSION_COOKIE_SECURE=os.getenv('FLASK_ENV')=='production' or bool(os.getenv('RENDER')))
  if test_config:app.config.update(test_config)
  if not app.config.get('TESTING') and (app.config.get('OWNER_USERNAME') or app.config.get('OWNER_PASSWORD_HASH')) and not os.getenv('SECRET_KEY'):raise RuntimeError('SECRET_KEY is required when owner authentication is configured')
  service=V112ModelService(ROOT);performance=load_performance(ROOT);history_path=ROOT/'results/v11_2_confidence_oos_game_predictions_2022_2025.csv'
@@ -157,8 +157,10 @@ def create_app(test_config=None):
  def api_metadata():return jsonify(service.meta)
  @app.route('/health')
  def health():
-  refresh=health_state()
-  return jsonify({'healthy':True,'model_loaded':True,'model_version':service.meta['model_version'],'artifact_verified':True,'persistence':'supabase_postgres' if database_url() else 'local_filesystem','refresh_executor':'github_actions' if database_url() else 'local_manual','last_successful_live_refresh':refresh.get('last_successful_refresh'),'refresh_status':refresh.get('status','unknown'),'current_data_date':refresh.get('current_data_date')})
+  refresh=health_state();current_date=refresh.get('current_data_date') or date.today().isoformat();payload=load_today(ROOT,current_date);games=payload.get('games',[]);statuses={}
+  for game in games:statuses[game.get('status','UNKNOWN')]=statuses.get(game.get('status','UNKNOWN'),0)+1
+  persistence=persistence_health(current_date)
+  return jsonify({'healthy':bool(persistence.get('connected',True)),'model_loaded':True,'model_version':service.meta['model_version'],'artifact_verified':True,'persistence':'supabase_postgres' if database_url() else 'local_filesystem','refresh_executor':refresh.get('executor') or ('github_actions' if database_url() else 'local_manual'),'last_successful_live_refresh':refresh.get('last_successful_refresh'),'refresh_status':refresh.get('status','unknown'),'current_data_date':current_date,'supabase':persistence,'today':{'payload_available':bool(games),'game_count':len(games),'statuses':statuses,'provisional_predictions':sum(g.get('forecast_type')=='PROVISIONAL_PREDICTION' for g in games),'final_predictions':sum(g.get('forecast_type')=='FINAL_PREGAME_PREDICTION' for g in games),'insufficient_data':sum(g.get('status')=='INSUFFICIENT_DATA' for g in games),'pending_lineup':sum(g.get('status')=='PENDING_LINEUP' for g in games),'pending_starter':sum(g.get('status')=='PENDING_STARTER' for g in games)}})
  @app.route('/api/predictions/history')
  def api_history():
   h=history();season=request.args.get('season',type=int);team=request.args.get('team','')

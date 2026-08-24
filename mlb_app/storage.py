@@ -319,6 +319,38 @@ def health_state():
     }
 
 
+def _sanitized_database_error(exc):
+    message = str(exc).lower()
+    if "password authentication failed" in message:
+        return "database authentication failed"
+    if "timeout" in message:
+        return "database connection timed out"
+    if "could not translate host name" in message or "name or service not known" in message:
+        return "database hostname could not be resolved"
+    if "connection refused" in message:
+        return "database connection refused"
+    return f"database operation failed ({type(exc).__name__})"
+
+
+def persistence_health(game_date=None):
+    """Credential-safe read-path diagnostics for the production health endpoint."""
+    if not database_url():
+        return {"configured": False, "connected": True, "mode": "local_filesystem"}
+    result = {"configured": True, "connected": False, "mode": "supabase_postgres", "operational_state_readable": False, "today_payload_present": False, "prediction_snapshots": None, "provisional_prediction_snapshots": None, "queued_rebuild_requests": None}
+    try:
+        with _connect() as connection:
+            connection.execute("SELECT 1").fetchone();result["connected"] = True
+            result["operational_state_readable"] = bool(connection.execute("SELECT 1 FROM operational_state LIMIT 1").fetchone())
+            if game_date:
+                result["today_payload_present"] = bool(connection.execute("SELECT 1 FROM operational_state WHERE state_key=%s", ("today:" + str(game_date),)).fetchone())
+                result["prediction_snapshots"] = int(connection.execute("SELECT COUNT(*) FROM prediction_snapshots WHERE game_date=%s", (game_date,)).fetchone()[0])
+                result["provisional_prediction_snapshots"] = int(connection.execute("SELECT COUNT(*) FROM provisional_prediction_snapshots WHERE game_date=%s", (game_date,)).fetchone()[0])
+            result["queued_rebuild_requests"] = int(connection.execute("SELECT COUNT(*) FROM rebuild_requests WHERE status='queued'").fetchone()[0])
+    except Exception as exc:
+        result["error"] = _sanitized_database_error(exc)
+    return result
+
+
 def acquire_worker_lock(connection, lock_id=112002026):
     """Hold a PostgreSQL session advisory lock for one refresh worker."""
     return bool(connection.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,)).fetchone()[0])
