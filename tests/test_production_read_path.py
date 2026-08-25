@@ -7,7 +7,9 @@ def test_static_assets_use_public_static_endpoint():
     client = create_app({"TESTING": True}).test_client()
     home = client.get("/")
     assert home.status_code == 200
-    assert 'href="/static/css/site.css"' in home.get_data(as_text=True)
+    html = home.get_data(as_text=True)
+    assert 'href="/static/css/product.css"' in html
+    assert 'data-ui="editorial-v11-2"' in html
     assert 'src="/static/js/site.js"' in home.get_data(as_text=True)
     css = client.get("/static/css/site.css")
     js = client.get("/static/js/site.js")

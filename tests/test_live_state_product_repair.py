@@ -32,6 +32,49 @@ def test_tracking_append_is_idempotent_and_cumulative(tmp_path):
     assert cumulative.iloc[-1].predictions == 2
 
 
+def test_partial_finalization_defers_nonfinal_statuses(tmp_path, monkeypatch):
+    evaluator = _evaluator(tmp_path)
+    games=[{"game_id":1},{"game_id":2},{"game_id":3}]
+    monkeypatch.setattr(evaluator,"validate_snapshots",lambda day:(games,[]))
+    statuses={1:{"game_id":1,"final":True,"away_runs":2,"home_runs":4,"detailed_status":"Final"},2:{"game_id":2,"final":False,"detailed_status":"Postponed","abstract_status":"Preview"},3:{"game_id":3,"final":False,"detailed_status":"Suspended","abstract_status":"Live"}}
+    monkeypatch.setattr(evaluator,"official_result",lambda gid:statuses[gid]);monkeypatch.setattr(evaluator,"grade",lambda game,a,h:_graded("2026-08-24",game["game_id"]))
+    report=evaluator.grade_available("2026-08-24")
+    assert report["eligible"]==3 and report["graded"]==1 and report["deferred"]==2
+    assert report["deferred_game_ids"]==[2,3] and report["finalization_status"]=="partial"
+    daily=pd.read_csv(evaluator.DAILY).iloc[0];assert daily.eligible_snapshots==3 and daily.deferred_games==2 and daily.finalization_status=="partial"
+
+
+def test_all_final_and_all_deferred_contracts(tmp_path, monkeypatch):
+    evaluator=_evaluator(tmp_path);games=[{"game_id":1},{"game_id":2}];monkeypatch.setattr(evaluator,"validate_snapshots",lambda day:(games,[]));monkeypatch.setattr(evaluator,"grade",lambda game,a,h:_graded("2026-08-24",game["game_id"]));monkeypatch.setattr(evaluator,"official_result",lambda gid:{"game_id":gid,"final":True,"away_runs":1,"home_runs":2,"detailed_status":"Final"})
+    complete=evaluator.grade_available("2026-08-24");assert complete["eligible"]==2 and complete["graded"]==2 and complete["deferred"]==0 and complete["finalization_status"]=="complete"
+    other=_evaluator(tmp_path/"other");monkeypatch.setattr(other,"validate_snapshots",lambda day:(games,[]));monkeypatch.setattr(other,"official_result",lambda gid:{"game_id":gid,"final":False,"abstract_status":"Preview","detailed_status":"Postponed"})
+    partial=other.grade_available("2026-08-24");assert partial["graded"]==0 and partial["deferred"]==2 and partial["finalization_status"]=="partial"
+    daily=pd.read_csv(other.DAILY).iloc[0];assert daily.predictions==0 and daily.deferred_games==2
+
+
+def test_deferred_game_later_grades_once_and_recomputes_day(tmp_path, monkeypatch):
+    evaluator=_evaluator(tmp_path);games=[{"game_id":1},{"game_id":2}];phase={"final":False}
+    monkeypatch.setattr(evaluator,"validate_snapshots",lambda day:(games,[]))
+    def result(gid):
+        if gid==1 or phase["final"]:return {"game_id":gid,"final":True,"away_runs":2,"home_runs":4,"detailed_status":"Final"}
+        return {"game_id":gid,"final":False,"detailed_status":"In Progress","abstract_status":"Live"}
+    monkeypatch.setattr(evaluator,"official_result",result);monkeypatch.setattr(evaluator,"grade",lambda game,a,h:_graded("2026-08-24",game["game_id"]))
+    first=evaluator.grade_available("2026-08-24");assert first["graded"]==1 and first["deferred"]==1
+    phase["final"]=True;second=evaluator.grade_available("2026-08-24");third=evaluator.grade_available("2026-08-24")
+    assert second["graded"]==2 and second["newly_graded"]==1 and second["deferred"]==0
+    assert third["graded"]==2 and third["newly_graded"]==0
+    assert len(pd.read_csv(evaluator.LEDGER))==2
+    daily=pd.read_csv(evaluator.DAILY).iloc[0];assert daily.predictions==2 and daily.finalization_status=="complete"
+
+
+def test_refresh_stays_ok_for_structured_deferred_result(monkeypatch,tmp_path):
+    import github_actions_refresh as worker
+    saved=[];monkeypatch.setattr(worker,"ROOT",tmp_path);monkeypatch.setenv("MLB_STATE_DIR",str(tmp_path/"live"));monkeypatch.setattr(worker,"load_state",lambda *a:{});monkeypatch.setattr(worker,"save_state",lambda key,value:saved.append((key,value)) or True);monkeypatch.setattr(worker,"_grade_completed_days",lambda day:[{"date":"2026-08-24","eligible":10,"graded":9,"deferred":1,"deferred_game_ids":[823260]}]);monkeypatch.setattr(worker,"_publish_tracking",lambda:None);monkeypatch.setattr(worker,"fetch_schedule",lambda *a:([],{}));monkeypatch.setattr(worker,"_full_refresh_required",lambda *a:(False,[]));monkeypatch.setattr(worker,"V112ModelService",lambda root:object());monkeypatch.setattr(worker,"refresh_cycle",lambda *a:{"games":[]});monkeypatch.setattr(worker,"_resolve_requests",lambda *a:[]);monkeypatch.setattr(worker,"atomic_json",lambda *a:None)
+    worker.run("2026-08-25",skip_season=True)
+    health=[value for key,value in saved if key=="refresh_status"][-1]
+    assert health["status"]=="ok" and health["grading"][0]["deferred"]==1
+
+
 def _game(status="Scheduled"):
     return {"game_id": 9, "date": "2026-08-25", "start_time": "2099-08-25T18:00:00Z", "status": status, "away_team": "Away", "home_team": "Home", "away_starter": "A", "home_starter": "H", "away_starter_id": 1, "home_starter_id": 2}
 

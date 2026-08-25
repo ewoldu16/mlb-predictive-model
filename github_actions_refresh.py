@@ -50,12 +50,12 @@ def _grade_completed_days(day):
   for game in snapshots:atomic_json(game,folder/f"prediction_{int(game['game_id'])}.json")
   report=evaluator.grade_available(target);reports.append(report)
   if report.get('date_records'):save_state('live_results:'+target,report['date_records'])
+  save_state('live_grading:'+target,report)
  return reports
 def run(day,force_season=False,skip_season=False):
  started=time.perf_counter();previous=load_state('refresh_status') or {};now=datetime.now(timezone.utc).isoformat();save_state('refresh_status',{'status':'running','started_at':now,'last_successful_refresh':previous.get('last_successful_refresh'),'executor':'github_actions','current_data_date':day})
  try:
-  try:grading=_grade_completed_days(day);_publish_tracking()
-  except Exception as grading_error:grading=[{'status':'deferred','error':type(grading_error).__name__}]
+  grading=_grade_completed_days(day);_publish_tracking()
   state_root=Path(os.getenv('MLB_STATE_DIR',ROOT/'data/live'));games,_=fetch_schedule(day,state_root/day/'schedule_cache');refresh_needed,completed=_full_refresh_required(day,games,force_season)
   if refresh_needed and not skip_season:_run_full(day)
   service=V112ModelService(ROOT);payload=refresh_cycle(ROOT,service,day);resolved=_resolve_requests(ROOT,payload);finished=datetime.now(timezone.utc).isoformat();state={'season_refresh_date':day if refresh_needed and not skip_season else _read_state().get('season_refresh_date'),'completed_today':completed,'last_run':finished};atomic_json(state,_state_path());health={'status':'ok','executor':'github_actions','started_at':now,'last_successful_refresh':finished,'current_data_date':day,'games':len(payload.get('games',[])),'queued_requests_resolved':resolved,'grading':grading,'full_season_refresh':bool(refresh_needed and not skip_season),'refresh_seconds':time.perf_counter()-started};save_state('refresh_status',health);print(json.dumps(health,indent=2));return payload

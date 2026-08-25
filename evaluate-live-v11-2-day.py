@@ -25,10 +25,21 @@ def validate_snapshots(day):
   (rejected if reasons else eligible).append({'file':path.name,'game_id':game.get('game_id'),'reasons':'|'.join(reasons)}) if reasons else eligible.append(game)
  return eligible,rejected
 
-def final_result(game_id):
+def official_result(game_id):
  with urllib.request.urlopen(f'https://statsapi.mlb.com/api/v1.1/game/{int(game_id)}/feed/live',timeout=30) as response:data=json.loads(response.read())
- if data['gameData']['status']['abstractGameState']!='Final':raise RuntimeError(f'game {game_id} is not final')
- teams=data['liveData']['linescore']['teams'];return int(teams['away']['runs']),int(teams['home']['runs'])
+ try:status=data['gameData']['status'];abstract=status['abstractGameState'];detailed=status.get('detailedState') or abstract
+ except (KeyError,TypeError) as exc:raise ValueError(f'game {game_id}: malformed official MLB status response') from exc
+ base={'game_id':int(game_id),'abstract_status':abstract,'detailed_status':detailed,'reason':status.get('reason'),'scheduled_start':data.get('gameData',{}).get('datetime',{}).get('dateTime')}
+ if abstract!='Final':return {**base,'final':False}
+ try:teams=data['liveData']['linescore']['teams'];away=int(teams['away']['runs']);home=int(teams['home']['runs'])
+ except (KeyError,TypeError,ValueError) as exc:raise ValueError(f'game {game_id}: final MLB response has no valid final score') from exc
+ return {**base,'final':True,'away_runs':away,'home_runs':home}
+
+def final_result(game_id):
+ """Backward-compatible strict helper; the batch finalizer uses official_result."""
+ result=official_result(game_id)
+ if not result['final']:raise RuntimeError(f"game {game_id} is not final ({result['detailed_status']})")
+ return result['away_runs'],result['home_runs']
 
 def grade(game,away_runs,home_runs):
  p=game['prediction'];away=float(p['away']['expected_runs']);home=float(p['home']['expected_runs']);actual_winner=game['home_team'] if home_runs>away_runs else game['away_team'];ae=away-away_runs;he=home-home_runs;total=float(p['projected_total']);actual_total=away_runs+home_runs;pdiff=float(p['projected_run_difference']);adiff=home_runs-away_runs
@@ -48,18 +59,26 @@ def append_day(day,graded):
  for cutoff in sorted(ledger.date.astype(str).unique()):cumulative.append({'through_date':cutoff,'tracking_label':'PROSPECTIVE LIVE 2026 TRACKING',**metrics(ledger[ledger.date.astype(str).le(cutoff)])})
  pd.DataFrame(cumulative).to_csv(CUMULATIVE,index=False);return new,pd.DataFrame(daily),pd.DataFrame(cumulative)
 
+def annotate_daily(day,eligible,deferred):
+ DAILY.parent.mkdir(parents=True,exist_ok=True);daily=pd.read_csv(DAILY) if DAILY.exists() else pd.DataFrame();mask=daily.date.astype(str).eq(day) if len(daily) and 'date' in daily else pd.Series(False,index=daily.index)
+ if not mask.any():
+  empty={'date':day,'predictions':0,'winner_correct':0,'winner_incorrect':0,'winner_accuracy':None,'team_run_MAE':None,'team_run_RMSE':None,'total_MAE':None,'total_RMSE':None,'mean_projected_total':None,'mean_actual_total':None,'60plus_predictions':0,'60plus_correct':0,'60plus_accuracy':None};daily=pd.concat([daily,pd.DataFrame([empty])],ignore_index=True);mask=daily.date.astype(str).eq(day)
+ daily.loc[mask,'eligible_snapshots']=int(eligible);daily.loc[mask,'deferred_games']=int(deferred);daily.loc[mask,'finalization_status']='partial' if deferred else 'complete';daily.sort_values('date').to_csv(DAILY,index=False)
+
 def grade_available(day):
- eligible,rejected=validate_snapshots(day);existing_frame=pd.read_csv(LEDGER) if LEDGER.exists() else pd.DataFrame();existing_ids=set(pd.to_numeric(existing_frame.get('game_id',pd.Series(dtype=float)),errors='coerce').dropna().astype(int));graded=[];not_final=[]
+ eligible,rejected=validate_snapshots(day);existing_frame=pd.read_csv(LEDGER) if LEDGER.exists() else pd.DataFrame();existing_ids=set(pd.to_numeric(existing_frame.get('game_id',pd.Series(dtype=float)),errors='coerce').dropna().astype(int));new_records=[];deferred=[]
  for game in eligible:
   if int(game['game_id']) in existing_ids:continue
-  try:graded.append(grade(game,*final_result(game['game_id'])))
-  except RuntimeError as exc:not_final.append({'game_id':int(game['game_id']),'reason':str(exc)})
- if not graded:
+  result=official_result(game['game_id'])
+  if not result['final']:
+   deferred.append(result);continue
+  new_records.append(grade(game,result['away_runs'],result['home_runs']))
+ if not new_records:
   date_records=existing_frame[existing_frame.date.astype(str).eq(day)].to_dict('records') if len(existing_frame) and 'date' in existing_frame else []
-  return {'date':day,'eligible_snapshots':len(eligible),'newly_graded':0,'graded':[],'date_records':date_records,'rejected':rejected,'not_final':not_final}
- new,daily,cumulative=append_day(day,graded)
+  annotate_daily(day,len(eligible),len(deferred));return {'date':day,'eligible':len(eligible),'graded':len(date_records),'newly_graded':0,'deferred':len(deferred),'deferred_game_ids':[x['game_id'] for x in deferred],'deferred_games':deferred,'rejected':len(rejected),'rejections':rejected,'date_records':date_records,'finalization_status':'partial' if deferred else 'complete'}
+ new,daily,cumulative=append_day(day,new_records);annotate_daily(day,len(eligible),len(deferred))
  date_records=pd.read_csv(LEDGER);date_records=date_records[date_records.date.astype(str).eq(day)]
- return {'date':day,'eligible_snapshots':len(eligible),'newly_graded':len(new),'graded':new.to_dict('records'),'date_records':date_records.to_dict('records'),'rejected':rejected,'not_final':not_final,'latest_tracked_date':str(daily.date.max()),'cumulative_predictions':int(cumulative.iloc[-1].predictions)}
+ return {'date':day,'eligible':len(eligible),'graded':len(date_records),'newly_graded':len(new),'deferred':len(deferred),'deferred_game_ids':[x['game_id'] for x in deferred],'deferred_games':deferred,'rejected':len(rejected),'rejections':rejected,'graded_records':new.to_dict('records'),'date_records':date_records.to_dict('records'),'finalization_status':'partial' if deferred else 'complete','latest_tracked_date':str(daily.date.max()),'cumulative_predictions':int(cumulative.iloc[-1].predictions)}
 
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--date',required=True);args=parser.parse_args();print(json.dumps(grade_available(args.date),indent=2,default=str))
