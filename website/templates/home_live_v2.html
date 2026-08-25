@@ -1,0 +1,1 @@
+{% extends 'home_live.html' %}{% block content %}{{ super() }}{% if payload.games|selectattr('forecast_type','equalto','PROVISIONAL_PREDICTION')|list %}<p class="note">PROVISIONAL FORECAST labels distinguish USING PROBABLE LINEUP from USING OWNER-MANAGED PROVISIONAL LINEUP.</p>{% endif %}{% endblock %}

@@ -39,16 +39,28 @@ def metrics(frame):
  return {'predictions':len(frame),'winner_correct':int(frame.winner_correct.sum()),'winner_incorrect':int((1-frame.winner_correct).sum()),'winner_accuracy':float(frame.winner_correct.mean()),'team_run_MAE':float(team_abs.mean()),'team_run_RMSE':float(np.sqrt(team_sq.mean())),'total_MAE':float(frame.total_abs_error.mean()),'total_RMSE':float(np.sqrt(frame.total_squared_error.mean())),'mean_projected_total':float(frame.pred_total.mean()),'mean_actual_total':float(frame.actual_total.mean()),'60plus_predictions':len(high),'60plus_correct':int(high.winner_correct.sum()),'60plus_accuracy':float(high.winner_correct.mean()) if len(high) else None}
 
 def append_day(day,graded):
- OUT.mkdir(parents=True,exist_ok=True);new=pd.DataFrame(graded).sort_values(['first_pitch','game_id']);old=pd.read_csv(LEDGER) if LEDGER.exists() else pd.DataFrame(columns=new.columns);duplicates=set(old.game_id.astype(str))&set(new.game_id.astype(str)) if len(old) else set()
- if duplicates:raise RuntimeError(f'immutable ledger already contains game IDs: {sorted(duplicates)}')
- ledger=pd.concat([old,new],ignore_index=True).sort_values(['date','first_pitch','game_id']);ledger.to_csv(LEDGER,index=False);day_row={'date':day,**metrics(new)};daily_old=pd.read_csv(DAILY) if DAILY.exists() else pd.DataFrame()
- if len(daily_old) and day in set(daily_old.date.astype(str)):raise RuntimeError(f'daily summary already contains immutable date {day}')
- pd.concat([daily_old,pd.DataFrame([day_row])],ignore_index=True).sort_values('date').to_csv(DAILY,index=False);cumulative=[]
+ OUT.mkdir(parents=True,exist_ok=True);new=pd.DataFrame(graded);old=pd.read_csv(LEDGER) if LEDGER.exists() else pd.DataFrame(columns=new.columns)
+ existing=set(pd.to_numeric(old.get('game_id',pd.Series(dtype=float)),errors='coerce').dropna().astype(int));new=new[~pd.to_numeric(new.game_id,errors='coerce').astype(int).isin(existing)] if len(new) else new
+ ledger=pd.concat([old,new],ignore_index=True).sort_values(['date','first_pitch','game_id']) if len(old) or len(new) else old;ledger.to_csv(LEDGER,index=False)
+ daily=[]
+ for tracked_day in sorted(ledger.date.astype(str).unique()):daily.append({'date':tracked_day,**metrics(ledger[ledger.date.astype(str).eq(tracked_day)])})
+ pd.DataFrame(daily).to_csv(DAILY,index=False);cumulative=[]
  for cutoff in sorted(ledger.date.astype(str).unique()):cumulative.append({'through_date':cutoff,'tracking_label':'PROSPECTIVE LIVE 2026 TRACKING',**metrics(ledger[ledger.date.astype(str).le(cutoff)])})
- pd.DataFrame(cumulative).to_csv(CUMULATIVE,index=False);return new,pd.DataFrame([day_row]),pd.DataFrame(cumulative)
+ pd.DataFrame(cumulative).to_csv(CUMULATIVE,index=False);return new,pd.DataFrame(daily),pd.DataFrame(cumulative)
+
+def grade_available(day):
+ eligible,rejected=validate_snapshots(day);existing_frame=pd.read_csv(LEDGER) if LEDGER.exists() else pd.DataFrame();existing_ids=set(pd.to_numeric(existing_frame.get('game_id',pd.Series(dtype=float)),errors='coerce').dropna().astype(int));graded=[];not_final=[]
+ for game in eligible:
+  if int(game['game_id']) in existing_ids:continue
+  try:graded.append(grade(game,*final_result(game['game_id'])))
+  except RuntimeError as exc:not_final.append({'game_id':int(game['game_id']),'reason':str(exc)})
+ if not graded:
+  date_records=existing_frame[existing_frame.date.astype(str).eq(day)].to_dict('records') if len(existing_frame) and 'date' in existing_frame else []
+  return {'date':day,'eligible_snapshots':len(eligible),'newly_graded':0,'graded':[],'date_records':date_records,'rejected':rejected,'not_final':not_final}
+ new,daily,cumulative=append_day(day,graded)
+ date_records=pd.read_csv(LEDGER);date_records=date_records[date_records.date.astype(str).eq(day)]
+ return {'date':day,'eligible_snapshots':len(eligible),'newly_graded':len(new),'graded':new.to_dict('records'),'date_records':date_records.to_dict('records'),'rejected':rejected,'not_final':not_final,'latest_tracked_date':str(daily.date.max()),'cumulative_predictions':int(cumulative.iloc[-1].predictions)}
 
 def main():
- parser=argparse.ArgumentParser();parser.add_argument('--date',required=True);args=parser.parse_args();eligible,rejected=validate_snapshots(args.date);print(json.dumps({'phase':'snapshot_validation_complete','date':args.date,'eligible_game_ids':[int(x['game_id']) for x in eligible],'rejected':rejected},indent=2));graded=[grade(game,*final_result(game['game_id'])) for game in eligible]
- if not graded:raise RuntimeError('no provably pregame immutable predictions')
- new,daily,cumulative=append_day(args.date,graded);print(new.to_string(index=False));print('\nDAILY\n',daily.to_string(index=False));print('\nCUMULATIVE\n',cumulative.tail(1).to_string(index=False))
+ parser=argparse.ArgumentParser();parser.add_argument('--date',required=True);args=parser.parse_args();print(json.dumps(grade_available(args.date),indent=2,default=str))
 if __name__=='__main__':main()

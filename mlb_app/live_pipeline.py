@@ -4,11 +4,12 @@ import json,os,urllib.parse,urllib.request
 import pandas as pd
 from .model_service import confidence_label
 from .feature_builder import build_daily_feature_rows
-from .storage import append_provisional_history,load_provisional_snapshot,load_snapshot,load_state,save_provisional_snapshot,save_snapshot,save_state
+from .storage import append_provisional_history,load_provisional_snapshot,load_provisional_snapshots_for_date,load_snapshot,load_snapshots_for_date,load_state,save_provisional_snapshot,save_snapshot,save_state
 from .probable_lineups import fetch_probable_lineups,lineup_fingerprint
 from .owner_controls import offense_confidence,owner_lineup_for_game,load_team_state
 
 STARTED={'In Progress','Manager Challenge','Delayed','Final','Game Over','Completed Early'}
+PREGAME_STATUS_PRIORITY=('FINAL_PREGAME_PREDICTION','PROVISIONAL_PREDICTION','PROVISIONAL_LINEUP_INCOMPLETE','PENDING_STARTER','PENDING_LINEUP','INSUFFICIENT_DATA')
 def atomic_json(data,path):
  path=Path(path);path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix(path.suffix+'.tmp');tmp.write_text(json.dumps(data,indent=2,allow_nan=False),encoding='utf-8');os.replace(tmp,path)
 def fetch_schedule(day,cache_dir):
@@ -86,7 +87,12 @@ def generate_predictions(root,service,day=None,refresh=True):
   if stored_provisional and state in {'IN_PROGRESS','FINAL','POSTPONED'}:
    stored_provisional['status']=state;stored_provisional['forecast_message']='Provisional forecast retained for research; no official final pregame forecast was created.';results.append(stored_provisional);continue
   if not lineup and stored_provisional:
-   stored_provisional['status']=state;stored_provisional['forecast_message']=message;results.append(stored_provisional);continue
+   stored_provisional['official_lineup_status']=lineup_status
+   if state in {'IN_PROGRESS','FINAL','POSTPONED'}:
+    stored_provisional['status']=state;stored_provisional['forecast_status']=state.lower();stored_provisional['forecast_message']='Retained provisional pregame forecast; no final confirmed-lineup forecast was created.'
+   else:
+    stored_provisional['status']='PROVISIONAL_PREDICTION';stored_provisional['forecast_status']='provisional_prediction';stored_provisional['forecast_type']='PROVISIONAL_PREDICTION';stored_provisional['forecast_message']='Using owner-managed provisional lineup; official lineup remains pending.'
+   results.append(stored_provisional);continue
   fingerprint=lineup_fingerprint(lineup)
   if stored_provisional and lineup and stored_provisional.get('lineup_fingerprint')==fingerprint and stored_provisional.get('lineup_status')==lineup_status:
    results.append(stored_provisional);continue
@@ -120,9 +126,27 @@ def compare_forecasts(provisional,final):
   for order in sorted(set(old)|set(new)):
    if old.get(order,{}).get('player_id')!=new.get(order,{}).get('player_id'):changes.append({'team_side':side,'batting_order':order,'provisional_player':old.get(order,{}).get('name'),'confirmed_player':new.get(order,{}).get('name')})
  return {'provisional_generated_at':provisional.get('snapshot',{}).get('generated_at'),'final_generated_at':final.get('snapshot',{}).get('generated_at'),'away_expected_runs_change':final['prediction']['away']['expected_runs']-provisional['prediction']['away']['expected_runs'],'home_expected_runs_change':final['prediction']['home']['expected_runs']-provisional['prediction']['home']['expected_runs'],'projected_total_change':final['prediction']['projected_total']-provisional['prediction']['projected_total'],'home_win_probability_change':final['prediction']['home_win_probability']-provisional['prediction']['home_win_probability'],'winner_probability_change':final['prediction']['winner_probability']-provisional['prediction']['winner_probability'],'predicted_winner_changed':final['prediction']['predicted_winner']!=provisional['prediction']['predicted_winner'],'lineup_substitutions':changes}
-def load_today(root,day=None):
- day=day or date.today().isoformat();root=Path(root);stored=load_state('today:'+day)
- if stored:return stored
+def _attach_results(payload,results):
+ by_id={int(row['game_id']):row for row in (results or []) if row.get('game_id') is not None}
+ for game in payload.get('games',[]):
+  result=by_id.get(int(game['game_id']))
+  if result:
+   game['actual_result']={'away_runs':result.get('actual_away_runs'),'home_runs':result.get('actual_home_runs'),'actual_winner':result.get('actual_winner'),'winner_correct':result.get('winner_correct')}
+ return payload
+
+def load_game_date(root,day):
+ root=Path(root);stored=load_state('today:'+day);finals=load_snapshots_for_date(day);provisionals=load_provisional_snapshots_for_date(day);results=load_state('live_results:'+day) or []
+ if stored:
+  by_final={int(x['game_id']):x for x in finals};by_provisional={int(x['game_id']):x for x in provisionals}
+  merged=[]
+  for current in stored.get('games',[]):
+   snapshot=by_final.get(int(current['game_id'])) or by_provisional.get(int(current['game_id']))
+   if snapshot and not current.get('prediction'):
+    retained=dict(snapshot);retained['current_game_status']=current.get('status');retained['official_lineup_status']=current.get('lineup_status')
+    if current.get('status') in {'IN_PROGRESS','FINAL','POSTPONED'}:retained['status']=current['status'];retained['forecast_status']=current['status'].lower()
+    merged.append(retained)
+   else:merged.append(current)
+  stored=dict(stored);stored['games']=merged;return _attach_results(stored,results)
  state_root=Path(os.getenv('MLB_STATE_DIR',root/'data/live'))
  for path in (state_root/day/'predictions.json',state_root/f'predictions_{day}.json'):
   if path.exists():
@@ -130,5 +154,9 @@ def load_today(root,day=None):
    if build.get('status')=='target_games_missing_from_feature_universe':
     for game in payload.get('games',[]):
      if game.get('status')=='INSUFFICIENT_DATA':game['forecast_message']='Exact target-game feature row is missing from the validated 2026 feature build.'
-   return payload
- return {'schema_version':'site-predictions-2.0','date':day,'generated_from':{'status':'not_generated'},'games':[]}
+   return _attach_results(payload,results)
+ snapshots=finals or provisionals
+ if snapshots:return _attach_results({'schema_version':'site-predictions-3.0','date':day,'generated_from':{'status':'immutable_snapshots'},'games':snapshots},results)
+ return {'schema_version':'site-predictions-3.0','date':day,'generated_from':{'status':'not_generated'},'games':[]}
+
+def load_today(root,day=None):return load_game_date(root,day or date.today().isoformat())

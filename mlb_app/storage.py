@@ -187,6 +187,20 @@ def load_snapshots_for_date(game_date):
     return [row[0] for row in rows]
 
 
+def load_provisional_snapshots_for_date(game_date):
+    if not database_url(): return []
+    initialize()
+    with _connect() as connection:rows=connection.execute("SELECT payload FROM provisional_prediction_snapshots WHERE game_date=%s ORDER BY game_id",(game_date,)).fetchall()
+    return [row[0] for row in rows]
+
+
+def snapshot_dates_before(game_date):
+    if not database_url(): return []
+    initialize()
+    with _connect() as connection:rows=connection.execute("SELECT DISTINCT game_date FROM prediction_snapshots WHERE game_date < %s ORDER BY game_date",(game_date,)).fetchall()
+    return [row[0].isoformat() if hasattr(row[0],'isoformat') else str(row[0]) for row in rows]
+
+
 def save_provisional_snapshot(game):
     """Provisional forecasts may update before first pitch; finals never do."""
     if not database_url(): return False

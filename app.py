@@ -6,9 +6,9 @@ from werkzeug.security import check_password_hash
 import hmac,json,os,pandas as pd
 from mlb_app.model_service import V112ModelService
 from mlb_app.performance import load_performance
-from mlb_app.live_pipeline import load_today
+from mlb_app.live_pipeline import load_game_date,load_today
 from mlb_app.transparency import build_transparency
-from mlb_app.storage import database_url,health_state,load_rebuild_request,persistence_health,queue_rebuild_request
+from mlb_app.storage import database_url,health_state,load_provisional_snapshot,load_rebuild_request,load_snapshot,persistence_health,queue_rebuild_request
 from mlb_app.live_tracking import load_live_tracking
 from mlb_app.owner_controls import AVAILABILITY_STATUSES,audit_history,bootstrap_team,csrf_token,load_team_state,locked,offense_confidence,record_rebuild,replacement_suggestions,save_lineup,save_team_state,set_availability
 from mlb_app.refresh_service import refresh_cycle
@@ -44,7 +44,7 @@ def create_app(test_config=None):
    for state in states.values():record_rebuild(ROOT,state,session.get('owner_id','owner'),after)
   return after
  @app.context_processor
- def owner_context():return {'csrf_token':lambda:csrf_token(session)}
+ def owner_context():return {'csrf_token':lambda:csrf_token(session),'owner_authenticated':bool(session.get('owner_authenticated'))}
  @app.template_filter('pct')
  def pct(x,d=1):
   try:value=float(x)
@@ -55,13 +55,24 @@ def create_app(test_config=None):
   try:value=float(x)
   except (TypeError,ValueError):return 'N/A'
   return f'{value:.{d}f}' if pd.notna(value) and value not in (float('inf'),float('-inf')) else 'N/A'
+ def date_context(day):
+  selected=pd.Timestamp(day);today=pd.Timestamp(date.today());return {'selected_date':selected.date().isoformat(),'previous_date':(selected-pd.Timedelta(days=1)).date().isoformat(),'next_date':(selected+pd.Timedelta(days=1)).date().isoformat() if selected<today else None,'today':today.date().isoformat()}
  @app.route('/')
- def home():return render_template('home_current.html',payload=load_today(ROOT),performance=performance,refresh=health_state())
+ def home():
+  requested=request.args.get('date');day=requested or date.today().isoformat();payload=load_game_date(ROOT,day) if requested else load_today(ROOT);return render_template('home_live_v2.html',payload=payload,performance=performance,refresh=health_state(),dates=date_context(day))
+ @app.route('/games/<day>')
+ def game_date_page(day):
+  try:day=pd.Timestamp(day).date().isoformat()
+  except Exception:abort(404)
+  return render_template('home_live_v2.html',payload=load_game_date(ROOT,day),performance=performance,refresh=health_state(),dates=date_context(day))
  @app.route('/game/<int:game_id>')
  def game_detail(game_id):
-  live=next((x for x in load_today(ROOT).get('games',[]) if x['game_id']==game_id),None)
+  requested_day=request.args.get('date');daily=load_game_date(ROOT,requested_day) if requested_day else load_today(ROOT);live=next((x for x in daily.get('games',[]) if x['game_id']==game_id),None)
+  if not live:
+   snapshot=load_snapshot(game_id) or load_provisional_snapshot(game_id)
+   if snapshot:daily=load_game_date(ROOT,str(snapshot.get('date')));live=next((x for x in daily.get('games',[]) if int(x['game_id'])==game_id),snapshot)
   if live:
-   html=render_template('game_live.html',game=live,t=build_transparency(ROOT,live,service,load_today(ROOT)))
+   html=render_template('game_live.html',game=live,t=build_transparency(ROOT,live,service,daily))
    if live.get('lineup_status')=='owner_managed':html=html.replace('Using confirmed lineup','Using owner-managed provisional lineup').replace('Lineup uncertainty: provisional.','Lineup uncertainty: owner-managed provisional lineup.')
    return html
   h=history();row=h[h.game_id.eq(game_id)]
@@ -82,8 +93,8 @@ def create_app(test_config=None):
    require_csrf();username=app.config.get('OWNER_USERNAME') or '';password_hash=app.config.get('OWNER_PASSWORD_HASH') or ''
    if username and password_hash and hmac.compare_digest(request.form.get('username',''),username) and check_password_hash(password_hash,request.form.get('password','')):
     session.clear();session['owner_authenticated']=True;session['owner_id']=username;session.permanent=True;csrf_token(session);return redirect(url_for('owner_dashboard'))
-   flash('Invalid owner credentials.');return render_template('owner_login.html'),401
-  return render_template('owner_login.html')
+   flash('Invalid credentials.');return render_template('owner_login_v2.html'),401
+  return render_template('owner_login_v2.html')
  @app.post('/owner/logout')
  @owner_required
  def owner_logout():require_csrf();session.clear();return redirect(url_for('home'))
@@ -93,7 +104,7 @@ def create_app(test_config=None):
   payload=load_today(ROOT);games=[]
   for game in payload.get('games',[]):
    states={side:load_team_state(ROOT,game['game_id'],side) for side in ('away','home')};games.append({'game':game,'states':states,'locked':locked(game),'rebuild':load_rebuild_request(game['game_id'])})
-  return render_template('owner_dashboard.html',date=payload.get('date'),games=games)
+  return render_template('owner_dashboard_v2.html',date=payload.get('date'),games=games)
  @app.route('/owner/game/<int:game_id>/<side>')
  @owner_required
  def owner_team(game_id,side):
@@ -136,12 +147,13 @@ def create_app(test_config=None):
  @app.route('/history')
  def history_page():
   h=history();team=request.args.get('team','').strip();season=request.args.get('season',type=int);confidence=request.args.get('confidence','').strip().upper();date=request.args.get('date','').strip()
+  if date and pd.Timestamp(date).year>=2026:return redirect(url_for('game_date_page',day=pd.Timestamp(date).date().isoformat()))
   if team:h=h[h.team_away.str.contains(team,case=False,na=False)|h.team_home.str.contains(team,case=False,na=False)]
   if season:h=h[h.season.eq(season)]
   if date:h=h[h.date.astype(str).str.startswith(date)]
   if confidence:
    labels=pd.cut(h.favorite_probability,[.5,.55,.60,1.01],labels=['LOW','MODERATE','HIGH'],right=False);h=h[labels.eq(confidence)]
-  return render_template('history.html',rows=h.sort_values('date',ascending=False).head(250).to_dict('records'),filters={'team':team,'season':season,'confidence':confidence,'date':date})
+  return render_template('history_v2.html',rows=h.sort_values('date',ascending=False).head(250).to_dict('records'),filters={'team':team,'season':season,'confidence':confidence,'date':date})
  @app.route('/api/games/today')
  def api_today():return jsonify(load_today(ROOT))
  @app.route('/api/game/<int:game_id>')
